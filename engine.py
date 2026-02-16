@@ -65,6 +65,11 @@ class QuantOptionEngine:
                 puts['prob_itm'] = puts.apply(lambda x: 1 - self.calculate_pitm(price, x.strike, days, x.impliedVolatility), axis=1)
                 puts['diff'] = (puts['prob_itm'] - target_put_itm).abs()
                 puts['annualized_yield'] = (puts['lastPrice'] / puts['strike']) * (365.0 / days)
+                
+                # Expected Move & Targets
+                puts['expected_move'] = price * puts['impliedVolatility'] * np.sqrt(days / 365.0)
+                puts['score_target'] = price + (puts['expected_move'] * ((score - 50) / 40.0))
+                puts['downside_target'] = price - puts['expected_move']
                 all_puts.append(puts)
 
                 # Process Calls
@@ -73,6 +78,11 @@ class QuantOptionEngine:
                 calls['days_to_expiry'] = days
                 calls['prob_itm'] = calls.apply(lambda x: self.calculate_pitm(price, x.strike, days, x.impliedVolatility), axis=1)
                 calls['diff'] = (calls['prob_itm'] - target_call_itm).abs()
+                
+                # Expected Move & Targets
+                calls['expected_move'] = price * calls['impliedVolatility'] * np.sqrt(days / 365.0)
+                calls['score_target'] = price + (calls['expected_move'] * ((score - 50) / 40.0))
+                calls['downside_target'] = price - calls['expected_move']
                 all_calls.append(calls)
             except Exception:
                 continue
@@ -93,14 +103,18 @@ class QuantOptionEngine:
                 "prob_itm": f"{best_put['prob_itm']:.1%}",
                 "annualized_yield": f"{best_put['annualized_yield']:.1%}",
                 "contracts": int(capital // (best_put['strike'] * 100)),
-                "expiry": best_put['expiry']
+                "expiry": best_put['expiry'],
+                "score_target": best_put['score_target'],
+                "downside_target": best_put['downside_target']
             },
             "long_call": {
                 "strike": best_call['strike'],
                 "premium": best_call['lastPrice'],
                 "prob_itm": f"{best_call['prob_itm']:.1%}",
                 "breakeven": best_call['strike'] + best_call['lastPrice'],
-                "expiry": best_call['expiry']
+                "expiry": best_call['expiry'],
+                "score_target": best_call['score_target'],
+                "downside_target": best_call['downside_target']
             }
         }
 
@@ -136,6 +150,11 @@ class QuantHedgeEngine:
         ticker = yf.Ticker(symbol)
         price = ticker.info.get('regularMarketPrice', ticker.info.get('previousClose', 0))
 
+        # Fetch analyst targets
+        target_low = ticker.info.get('targetLowPrice')
+        target_mean = ticker.info.get('targetMeanPrice')
+        # Defaults handled in app or if None
+
         # Handle cases where ticker is invalid or has no price
         if price is None or price == 0:
             analysis_packet = {
@@ -170,6 +189,10 @@ class QuantHedgeEngine:
                 "timestamp": datetime.now().isoformat(),
                 "engine_version": "2.1-Skew-Kelly"
             },
+            "analyst_targets": {
+                "low": target_low if target_low else price * 0.8,
+                "mean": target_mean if target_mean else price * 1.15
+            },
             "verdict": {
                 "signal": "BUY" if total_score > 60 else "HOLD" if total_score > 45 else "AVOID",
                 "score": round(total_score),
@@ -184,7 +207,9 @@ class QuantHedgeEngine:
             },
             "logic_breakdown": {
                 "market_sentiment": mkt_reason,
+                "market_score": mkt_score,
                 "insider_activity": ins_reason,
+                "insider_score": ins_score,
                 "atr_volatility": exits['atr']
             }
         }

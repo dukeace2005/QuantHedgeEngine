@@ -2,7 +2,7 @@
 *masterprompt*
 
 .streamlit/
-.trade_logs/
+trade_logs
 
 # Virtual environments (installed third-party libs)
 .venv/
