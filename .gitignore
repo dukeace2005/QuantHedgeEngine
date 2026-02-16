@@ -1,0 +1,35 @@
+# Masterprompt related files
+*masterprompt*
+
+.streamlit/
+.trade_logs/
+
+# Virtual environments (installed third-party libs)
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.so
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE / tools
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.cursor/
+
+# Project-specific (tokens, env, logs)
+token.json
+*.log
+.env
+.env.*

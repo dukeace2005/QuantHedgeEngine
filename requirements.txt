@@ -1,0 +1,14 @@
+# --- Core Data & Analytics ---
+yfinance>=0.2.40      # Financial data scraping from Yahoo Finance
+pandas>=2.2.0        # Data manipulation and DataFrame handling
+numpy>=1.26.0         # Numerical calculations for Kelly Criterion and ATR
+
+# --- API & Networking ---
+requests>=2.31.0      # Fallback for FMP API calls
+
+# --- Dashboard & Visualization ---
+streamlit>=1.35.0     # The web-based dashboard interface
+plotly>=5.20.0        # (Optional) For more advanced financial charting
+
+# --- System ---
+python-dateutil>=2.9.0 # Robust date handling for earnings checks
