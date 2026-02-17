@@ -6,106 +6,168 @@ import os
 from datetime import datetime
 from scipy.stats import norm
 
+# Add to your existing QuantOptionEngine class
+from functools import lru_cache
+import pandas as pd
+import numpy as np
+from scipy.stats import norm
+import hashlib
+
 class QuantOptionEngine:
     def __init__(self, risk_free_rate=0.045):
-        self.r = risk_free_rate # 2026 Average Rate
-
-    def calculate_pitm(self, S, K, T_days, iv):
-        """Calculates Probability ITM using Black-Scholes N(d2)."""
-        T = T_days / 365.0
-        if T <= 0 or iv <= 0: return 0.5
-        # d2 is the probability that the option will be exercised
-        d2 = (np.log(S / K) + (self.r - 0.5 * iv**2) * T) / (iv * np.sqrt(T))
-        return norm.cdf(d2)
-
-    def get_option_recommendations(self, symbol, score, capital):
-        ticker = yf.Ticker(symbol)
-        price = ticker.info.get('regularMarketPrice', ticker.info.get('previousClose'))
+        self.r = risk_free_rate
+        self._pitm_cache = {}  # Add cache dictionary
+        self._chain_cache = {}  # Cache for option chains
+    
+    @lru_cache(maxsize=1024)
+    def calculate_pitm_cached(self, S, K, T_days, iv):
+        """Cached version of probability ITM calculation"""
+        return self.calculate_pitm(S, K, T_days, iv)
+    
+    def calculate_pitm_vectorized(self, S, K_array, T_days_array, iv_array):
+        """Vectorized PITM calculation for multiple options at once"""
+        T = T_days_array / 365.0
+        valid = (T > 0) & (iv_array > 0)
         
-        if not ticker.options:
-            return {"error": "No options found for this ticker."}
-
-        # 1. Select Expirations (Window: 15 to 45 Days)
+        d2 = np.where(
+            valid,
+            (np.log(S / K_array) + (self.r - 0.5 * iv_array**2) * T) / (iv_array * np.sqrt(T)),
+            0
+        )
+        
+        prob = norm.cdf(d2)
+        prob[~valid] = 0.5
+        return prob
+    
+    def get_option_recommendations(self, symbol, score, capital):
+        """Optimized version with caching and vectorization"""
+        
+        # Cache ticker data to avoid repeated yfinance calls
+        cache_key = f"{symbol}_{datetime.now().strftime('%Y%m%d')}"
+        
+        if cache_key in self._chain_cache:
+            ticker_data = self._chain_cache[cache_key]
+        else:
+            ticker = yf.Ticker(symbol)
+            price = ticker.info.get('regularMarketPrice', ticker.info.get('previousClose'))
+            
+            if not ticker.options:
+                return {"error": "No options found for this ticker."}
+            
+            # Cache the ticker data
+            self._chain_cache[cache_key] = {
+                'ticker': ticker,
+                'price': price,
+                'options': ticker.options,
+                'timestamp': datetime.now()
+            }
+            ticker_data = self._chain_cache[cache_key]
+        
+        ticker = ticker_data['ticker']
+        price = ticker_data['price']
+        
+        # 1. Select Expirations (optimized with list comprehension)
         today = datetime.now()
-        valid_expirations = []
-        for date_str in ticker.options:
-            d = datetime.strptime(date_str, "%Y-%m-%d")
-            days = (d - today).days
-            if 15 <= days <= 45:
-                valid_expirations.append(date_str)
+        today_tuple = today.toordinal()  # Faster than datetime objects
+        
+        valid_expirations = [
+            date_str for date_str in ticker.options
+            if 15 <= (datetime.strptime(date_str, "%Y-%m-%d").toordinal() - today_tuple) <= 45
+        ]
         
         if not valid_expirations:
-            # Fallback to nearest if no ideal window found
-            valid_expirations = [min(ticker.options, key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d") - today).days - 30))]
-
-        # 2. Strategy Logic based on BUY signal strength
-        if score > 75: # STRONG BUY
-            target_put_itm = 0.45   # Aggressive entry (High Delta)
-            target_call_itm = 0.65  # Deep ITM for safety
-        elif score > 55: # MODERATE BUY
-            target_put_itm = 0.25   # Standard income
-            target_call_itm = 0.50  # At-the-money
-        else: # WEAK/NEUTRAL
-            target_put_itm = 0.15   # High safety
-            target_call_itm = 0.35  # OTM Lottery (Low preference)
-
-        # 3. Aggregate Chains & Select Best Match
+            # Fallback - find closest to 30 days
+            valid_expirations = [min(
+                ticker.options,
+                key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").toordinal() - today_tuple) - 30)
+            )]
+        
+        # 2. Strategy targets (unchanged - your logic is good)
+        if score > 75:
+            target_put_itm, target_call_itm = 0.45, 0.65
+        elif score > 55:
+            target_put_itm, target_call_itm = 0.25, 0.50
+        else:
+            target_put_itm, target_call_itm = 0.15, 0.35
+        
+        # 3. Batch process all expirations
         all_puts = []
         all_calls = []
-
+        
+        # Pre-calculate date differences
+        exp_days = {
+            exp: (datetime.strptime(exp, "%Y-%m-%d").toordinal() - today_tuple)
+            for exp in valid_expirations
+        }
+        
         for exp in valid_expirations:
             try:
                 chain = ticker.option_chain(exp)
-                days = (datetime.strptime(exp, "%Y-%m-%d") - today).days
+                days = exp_days[exp]
                 
-                # Process Puts
+                # Process Puts - vectorized where possible
                 puts = chain.puts.copy()
                 puts['expiry'] = exp
                 puts['days_to_expiry'] = days
-                puts['prob_itm'] = puts.apply(lambda x: 1 - self.calculate_pitm(price, x.strike, days, x.impliedVolatility), axis=1)
+                
+                # Vectorized PITM calculation
+                puts['prob_itm'] = 1 - self.calculate_pitm_vectorized(
+                    price,
+                    puts['strike'].values,
+                    np.full(len(puts), days),
+                    puts['impliedVolatility'].fillna(0.3).values
+                )
+                
                 puts['diff'] = (puts['prob_itm'] - target_put_itm).abs()
                 puts['annualized_yield'] = (puts['lastPrice'] / puts['strike']) * (365.0 / days)
                 
-                # Liquidity
+                # Vectorized expected move calculations
+                puts['expected_move'] = price * puts['impliedVolatility'].fillna(0.3) * np.sqrt(days / 365.0)
+                puts['score_target'] = price + (puts['expected_move'] * ((score - 50) / 40.0))
+                puts['downside_target'] = price - puts['expected_move']
+                
+                # Fill NA for volume/OI
                 puts['volume'] = puts.get('volume', 0).fillna(0)
                 puts['openInterest'] = puts.get('openInterest', 0).fillna(0)
                 
-                # Expected Move & Targets
-                puts['expected_move'] = price * puts['impliedVolatility'] * np.sqrt(days / 365.0)
-                puts['score_target'] = price + (puts['expected_move'] * ((score - 50) / 40.0))
-                puts['downside_target'] = price - puts['expected_move']
                 all_puts.append(puts)
-
-                # Process Calls
+                
+                # Process Calls similarly
                 calls = chain.calls.copy()
                 calls['expiry'] = exp
                 calls['days_to_expiry'] = days
-                calls['prob_itm'] = calls.apply(lambda x: self.calculate_pitm(price, x.strike, days, x.impliedVolatility), axis=1)
-                calls['diff'] = (calls['prob_itm'] - target_call_itm).abs()
                 
-                # Liquidity
+                calls['prob_itm'] = self.calculate_pitm_vectorized(
+                    price,
+                    calls['strike'].values,
+                    np.full(len(calls), days),
+                    calls['impliedVolatility'].fillna(0.3).values
+                )
+                
+                calls['diff'] = (calls['prob_itm'] - target_call_itm).abs()
+                calls['expected_move'] = price * calls['impliedVolatility'].fillna(0.3) * np.sqrt(days / 365.0)
+                calls['score_target'] = price + (calls['expected_move'] * ((score - 50) / 40.0))
+                calls['downside_target'] = price - calls['expected_move']
+                
                 calls['volume'] = calls.get('volume', 0).fillna(0)
                 calls['openInterest'] = calls.get('openInterest', 0).fillna(0)
                 
-                # Expected Move & Targets
-                calls['expected_move'] = price * calls['impliedVolatility'] * np.sqrt(days / 365.0)
-                calls['score_target'] = price + (calls['expected_move'] * ((score - 50) / 40.0))
-                calls['downside_target'] = price - calls['expected_move']
                 all_calls.append(calls)
-            except Exception:
+                
+            except Exception as e:
                 continue
         
         if not all_puts or not all_calls:
-             return {"error": "No valid options data parsed."}
-
-        # Concatenate all chains
-        all_puts_df = pd.concat(all_puts)
-        all_calls_df = pd.concat(all_calls)
-
-        # Select Best (Sort by closeness to target ITM)
-        best_put = all_puts_df.sort_values('diff').iloc[0].to_dict()
-        best_call = all_calls_df.sort_values('diff').iloc[0].to_dict()
-
+            return {"error": "No valid options data parsed."}
+        
+        # Concatenate efficiently
+        all_puts_df = pd.concat(all_puts, ignore_index=True)
+        all_calls_df = pd.concat(all_calls, ignore_index=True)
+        
+        # Optimized selection - use nsmallest instead of full sort
+        best_put = all_puts_df.nsmallest(1, 'diff').iloc[0].to_dict()
+        best_call = all_calls_df.nsmallest(1, 'diff').iloc[0].to_dict()
+        
         return {
             "symbol": symbol,
             "price": price,
@@ -137,8 +199,200 @@ class QuantOptionEngine:
                 "calls": all_calls_df.to_dict('records')
             }
         }
-
 class QuantHedgeEngine:
+    def __init__(self, total_capital=100000, log_dir="trade_logs"):
+        self.total_capital = total_capital
+        self.log_dir = log_dir
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
+        # Cache for sector benchmarks
+        self.sector_benchmarks = {
+            'Technology': 0.85, 'Financial Services': 0.95, 
+            'Healthcare': 0.90, 'Consumer Cyclical': 1.05,
+            'Energy': 1.10, 'Utilities': 0.70, 'Default': 0.90
+        }
+        
+        # Add caching for ticker analysis
+        self._analysis_cache = {}
+        self._hist_cache = {}
+    
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _get_sector_multiplier(sector):
+        """Cached sector multiplier lookup"""
+        multipliers = {
+            'Technology': 0.85, 'Financial Services': 0.95, 
+            'Healthcare': 0.90, 'Consumer Cyclical': 1.05,
+            'Energy': 1.10, 'Utilities': 0.70
+        }
+        return multipliers.get(sector, 0.90)
+    
+    def _get_cached_history(self, ticker, period="3mo"):
+        """Cache historical data to avoid repeated downloads"""
+        symbol = ticker.ticker if hasattr(ticker, 'ticker') else str(ticker)
+        cache_key = f"{symbol}_{period}"
+        
+        if cache_key in self._hist_cache:
+            hist = self._hist_cache[cache_key]
+            # Check if cache is still fresh (e.g., < 1 hour old)
+            if (datetime.now() - hist['timestamp']).seconds < 3600:
+                return hist['data']
+        
+        # Download new data
+        hist = ticker.history(period=period)
+        self._hist_cache[cache_key] = {
+            'data': hist,
+            'timestamp': datetime.now()
+        }
+        return hist
+    
+    def analyze_ticker_optimized(self, symbol):
+        """Optimized version with caching"""
+        
+        # Check cache first (5 minute TTL)
+        cache_key = f"{symbol}_{datetime.now().strftime('%Y%m%d%H')}"
+        if cache_key in self._analysis_cache:
+            cache_entry = self._analysis_cache[cache_key]
+            if (datetime.now() - cache_entry['timestamp']).seconds < 300:  # 5 minutes
+                return cache_entry['data']
+        
+        ticker = yf.Ticker(symbol)
+        price = ticker.info.get('regularMarketPrice', ticker.info.get('previousClose', 0))
+        
+        # Early exit if no price
+        if price is None or price == 0:
+            return self._create_error_packet(symbol)
+        
+        # Parallel execution of independent calculations
+        import concurrent.futures
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit tasks
+            market_future = executor.submit(self._get_market_sentiment, ticker)
+            insider_future = executor.submit(self._get_weighted_insider_score, ticker)
+            atr_future = executor.submit(self._get_atr_targets_optimized, ticker, price)
+            
+            # Get results
+            mkt_score, mkt_reason = market_future.result()
+            ins_score, ins_reason = insider_future.result()
+            exits = atr_future.result()
+        
+        total_score = (mkt_score * 0.6) + (ins_score * 0.4)
+        
+        # Get analyst targets (can be done synchronously as it's fast)
+        target_low = ticker.info.get('targetLowPrice', price * 0.8)
+        target_mean = ticker.info.get('targetMeanPrice', price * 1.15)
+        
+        sizing = self._calculate_kelly_sizing_optimized(
+            total_score,
+            exits['risk_reward'],
+            price,
+            exits['stop_loss']
+        )
+        
+        analysis_packet = {
+            "metadata": {
+                "symbol": symbol,
+                "timestamp": datetime.now().isoformat(),
+                "engine_version": "2.1-Optimized"
+            },
+            "analyst_targets": {
+                "low": target_low,
+                "mean": target_mean
+            },
+            "verdict": {
+                "signal": "BUY" if total_score > 60 else "HOLD" if total_score > 45 else "AVOID",
+                "score": round(total_score),
+                "is_halted": total_score < 45
+            },
+            "trade_parameters": {
+                "entry_price": price,
+                "position_size_usd": sizing['suggested_trade_size'],
+                "stop_loss": exits['stop_loss'],
+                "take_profit": exits['take_profit'],
+                "risk_reward": exits['risk_reward']
+            },
+            "logic_breakdown": {
+                "market_sentiment": mkt_reason,
+                "market_score": mkt_score,
+                "insider_activity": ins_reason,
+                "insider_score": ins_score,
+                "atr_volatility": exits['atr']
+            }
+        }
+        
+        # Cache the result
+        self._analysis_cache[cache_key] = {
+            'data': analysis_packet,
+            'timestamp': datetime.now()
+        }
+        
+        # Async save (don't block)
+        import threading
+        threading.Thread(target=self.save_to_json, args=(analysis_packet,)).start()
+        
+        return analysis_packet
+    
+    def _get_atr_targets_optimized(self, ticker, current_price, atr_period=14, atr_multiplier=2, risk_reward_ratio=1.5):
+        """Optimized ATR calculation with numpy"""
+        hist = self._get_cached_history(ticker, "3mo")
+        
+        if hist.empty or len(hist) < atr_period:
+            atr_val = current_price * 0.05
+        else:
+            # Vectorized true range calculation
+            high_low = hist['High'].values - hist['Low'].values
+            high_close = np.abs(hist['High'].values - hist['Close'].shift(1).values)
+            low_close = np.abs(hist['Low'].values - hist['Close'].shift(1).values)
+            
+            true_range = np.maximum.reduce([high_low, high_close, low_close])
+            
+            # Exponential moving average
+            alpha = 1.0 / atr_period
+            atr_val = pd.Series(true_range).ewm(alpha=alpha, adjust=False).mean().iloc[-1]
+        
+        if pd.isna(atr_val) or atr_val == 0:
+            atr_val = current_price * 0.05
+        
+        stop_loss_price = current_price - (atr_val * atr_multiplier)
+        take_profit_price = current_price + (atr_val * atr_multiplier * risk_reward_ratio)
+        
+        return {
+            'stop_loss': round(stop_loss_price, 2),
+            'take_profit': round(take_profit_price, 2),
+            'risk_reward': risk_reward_ratio,
+            'atr': round(atr_val, 2)
+        }
+    
+    def _calculate_kelly_sizing_optimized(self, total_score, risk_reward_ratio, entry_price, stop_loss_price, max_risk_pct=0.02):
+        """Optimized Kelly sizing with numpy"""
+        risk_reward = max(risk_reward_ratio, 1.5)
+        win_prob = np.clip(total_score / 100.0, 0.01, 0.99)
+        
+        kelly_fraction = win_prob - ((1 - win_prob) / risk_reward)
+        risk_fraction = min(max_risk_pct, max(0, kelly_fraction * 0.5))
+        
+        if risk_fraction <= 0:
+            return {'suggested_trade_size': 0}
+        
+        dollar_risk = self.total_capital * risk_fraction
+        risk_per_share = entry_price - stop_loss_price
+        
+        if risk_per_share <= 0:
+            return {'suggested_trade_size': 0}
+        
+        num_shares = dollar_risk / risk_per_share
+        return {'suggested_trade_size': num_shares * entry_price}
+    
+    def _create_error_packet(self, symbol):
+        """Helper for error packets"""
+        return {
+            "metadata": {"symbol": symbol, "timestamp": datetime.now().isoformat(), "engine_version": "2.1-Optimized"},
+            "verdict": {"signal": "AVOID", "score": 0, "is_halted": True},
+            "trade_parameters": {"entry_price": 0, "position_size_usd": 0, "stop_loss": 0, "take_profit": 0, "risk_reward": 0},
+            "logic_breakdown": {"market_sentiment": f"Could not retrieve price for {symbol}.", "insider_activity": "N/A", "atr_volatility": "N/A"}
+        }
     def __init__(self, total_capital=100000, log_dir="trade_logs"):
         self.total_capital = total_capital
         self.log_dir = log_dir
