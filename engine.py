@@ -66,6 +66,10 @@ class QuantOptionEngine:
                 puts['diff'] = (puts['prob_itm'] - target_put_itm).abs()
                 puts['annualized_yield'] = (puts['lastPrice'] / puts['strike']) * (365.0 / days)
                 
+                # Liquidity
+                puts['volume'] = puts.get('volume', 0).fillna(0)
+                puts['openInterest'] = puts.get('openInterest', 0).fillna(0)
+                
                 # Expected Move & Targets
                 puts['expected_move'] = price * puts['impliedVolatility'] * np.sqrt(days / 365.0)
                 puts['score_target'] = price + (puts['expected_move'] * ((score - 50) / 40.0))
@@ -79,6 +83,10 @@ class QuantOptionEngine:
                 calls['prob_itm'] = calls.apply(lambda x: self.calculate_pitm(price, x.strike, days, x.impliedVolatility), axis=1)
                 calls['diff'] = (calls['prob_itm'] - target_call_itm).abs()
                 
+                # Liquidity
+                calls['volume'] = calls.get('volume', 0).fillna(0)
+                calls['openInterest'] = calls.get('openInterest', 0).fillna(0)
+                
                 # Expected Move & Targets
                 calls['expected_move'] = price * calls['impliedVolatility'] * np.sqrt(days / 365.0)
                 calls['score_target'] = price + (calls['expected_move'] * ((score - 50) / 40.0))
@@ -90,9 +98,13 @@ class QuantOptionEngine:
         if not all_puts or not all_calls:
              return {"error": "No valid options data parsed."}
 
+        # Concatenate all chains
+        all_puts_df = pd.concat(all_puts)
+        all_calls_df = pd.concat(all_calls)
+
         # Select Best (Sort by closeness to target ITM)
-        best_put = pd.concat(all_puts).sort_values('diff').iloc[0].to_dict()
-        best_call = pd.concat(all_calls).sort_values('diff').iloc[0].to_dict()
+        best_put = all_puts_df.sort_values('diff').iloc[0].to_dict()
+        best_call = all_calls_df.sort_values('diff').iloc[0].to_dict()
 
         return {
             "symbol": symbol,
@@ -105,7 +117,9 @@ class QuantOptionEngine:
                 "contracts": int(capital // (best_put['strike'] * 100)),
                 "expiry": best_put['expiry'],
                 "score_target": best_put['score_target'],
-                "downside_target": best_put['downside_target']
+                "downside_target": best_put['downside_target'],
+                "volume": int(best_put['volume']),
+                "open_interest": int(best_put['openInterest'])
             },
             "long_call": {
                 "strike": best_call['strike'],
@@ -114,7 +128,13 @@ class QuantOptionEngine:
                 "breakeven": best_call['strike'] + best_call['lastPrice'],
                 "expiry": best_call['expiry'],
                 "score_target": best_call['score_target'],
-                "downside_target": best_call['downside_target']
+                "downside_target": best_call['downside_target'],
+                "volume": int(best_call['volume']),
+                "open_interest": int(best_call['openInterest'])
+            },
+            "chain_data": {
+                "puts": all_puts_df.to_dict('records'),
+                "calls": all_calls_df.to_dict('records')
             }
         }
 
