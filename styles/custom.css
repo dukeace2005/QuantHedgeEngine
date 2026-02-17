@@ -1,0 +1,229 @@
+/* styles/custom.css */
+/* Main container styling */
+.main-header {
+    background: linear-gradient(90deg, #1E1E1E 0%, #2D2D2D 100%);
+    padding: 1rem;
+    border-radius: 10px;
+    margin-bottom: 1rem;
+    border-left: 4px solid #00BFFF;
+}
+
+/* Metric cards */
+.metric-card {
+    background: #1E1E1E;
+    padding: 1rem;
+    border-radius: 8px;
+    border-left: 3px solid #00BFFF;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    transition: transform 0.2s;
+}
+.metric-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,191,255,0.2);
+}
+
+/* Signal badges - Improved contrast */
+.signal-badge {
+    padding: 0.4rem 1rem;
+    border-radius: 20px;
+    font-weight: bold;
+    display: inline-block;
+    margin-bottom: 1rem;
+    text-align: center;
+    width: 100%;
+    font-size: 1.1rem;
+    letter-spacing: 0.5px;
+}
+.signal-buy {
+    background: rgba(0, 200, 100, 0.25);
+    color: #FFFFFF;
+    border: 2px solid #00FF88;
+    text-shadow: 0 0 5px rgba(0, 255, 136, 0.5);
+    box-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+}
+.signal-hold {
+    background: rgba(255, 165, 0, 0.25);
+    color: #FFFFFF;
+    border: 2px solid #FFA500;
+    text-shadow: 0 0 5px rgba(255, 165, 0, 0.5);
+    box-shadow: 0 0 10px rgba(255, 165, 0, 0.3);
+}
+.signal-avoid {
+    background: rgba(255, 68, 68, 0.25);
+    color: #FFFFFF;
+    border: 2px solid #FF4444;
+    text-shadow: 0 0 5px rgba(255, 68, 68, 0.5);
+    box-shadow: 0 0 10px rgba(255, 68, 68, 0.3);
+}
+
+/* Progress bar customization */
+.stProgress > div > div > div > div {
+    background-color: #00BFFF;
+}
+
+/* Tab styling */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 2rem;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 3rem;
+    white-space: pre-wrap;
+    border-radius: 4px 4px 0px 0px;
+}
+
+/* Sidebar minimum width */
+section[data-testid="stSidebar"] {
+    min-width: 350px !important;
+    max-width: 450px !important;
+}
+
+/* Header and refresh button alignment */
+div[data-testid="stSidebar"] div.element-container:has(button[key="refresh_btn"]) {
+    margin-top: 0.5rem;
+}
+
+/* Borderless icon button for refresh */
+button[key="refresh_btn"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: #00BFFF !important;
+    font-size: 1.5rem !important;
+    padding: 0 !important;
+    height: 2.5rem !important;
+    width: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+button[key="refresh_btn"]:hover {
+    color: #FFFFFF !important;
+    background: transparent !important;
+    border: none !important;
+    transform: scale(1.1);
+    transition: transform 0.2s;
+}
+button[key="refresh_btn"]:active {
+    transform: scale(0.95);
+}
+
+/* Restore original Run button style */
+button[data-testid="baseButton-primary"] {
+    background-color: #00BFFF !important;
+    color: white !important;
+    border: none !important;
+    font-weight: bold !important;
+}
+
+/* Badge button styling for recently viewed */
+div[data-testid="stSidebar"] .stButton button {
+    background: #2D2D2D !important;
+    border: none !important;
+    border-radius: 4px !important;
+    color: white !important;
+    font-size: 0.9rem !important;
+    font-weight: bold !important;
+    padding: 0.3rem 0.5rem !important;
+    margin: 0.1rem 0 !important;
+    transition: all 0.2s !important;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+    text-align: left !important;
+    height: auto !important;
+    min-height: 2.2rem !important;
+    white-space: normal !important;
+    line-height: 1.3 !important;
+}
+div[data-testid="stSidebar"] .stButton button:hover {
+    background: #3D3D3D !important;
+    transform: translateY(-2px) !important;
+    box-shadow: 0 4px 8px rgba(0,191,255,0.2) !important;
+}
+div[data-testid="stSidebar"] .stButton button:active {
+    transform: translateY(0) !important;
+}
+
+/* Nasdaq-style header */
+.nasdaq-header {
+    background: #0E0E0E;
+    border-bottom: 1px solid #333;
+    padding: 1.5rem 1rem;
+    margin-bottom: 1.5rem;
+    border-radius: 0;
+}
+.ticker-title {
+    color: #888;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.company-name {
+    color: white;
+    font-size: 1.8rem;
+    font-weight: bold;
+    margin: 0;
+}
+.price-large {
+    color: white;
+    font-size: 2.5rem;
+    font-weight: bold;
+    line-height: 1.2;
+}
+.price-change {
+    font-size: 1.2rem;
+    margin-left: 0.5rem;
+}
+.price-change.positive {
+    color: #00FF88;
+}
+.price-change.negative {
+    color: #FF4444;
+}
+.price-change.neutral {
+    color: #FFA500;
+}
+.market-info {
+    color: #888;
+    font-size: 0.8rem;
+}
+.market-info strong {
+    color: white;
+    font-weight: normal;
+}
+.detail-label {
+    color: #888;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    margin-bottom: 0.2rem;
+}
+.detail-value {
+    color: white;
+    font-size: 1rem;
+    font-weight: bold;
+}
+.detail-value.small {
+    font-size: 0.9rem;
+}
+.exchange-badge {
+    background: #2A2A2A;
+    color: #00BFFF;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    display: inline-block;
+    margin-left: 0.5rem;
+}
+.bid-ask {
+    background: #1A1A1A;
+    padding: 0.5rem;
+    border-radius: 6px;
+    border-left: 3px solid #00BFFF;
+}
+.divider {
+    border-top: 1px solid #333;
+    margin: 1rem 0;
+}
+
+/* Remove any leftover spacing */
+.stMarkdown {
+    margin-bottom: 0 !important;
+}
