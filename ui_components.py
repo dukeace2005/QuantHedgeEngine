@@ -147,7 +147,6 @@ class ChartRenderer:
         
         return fig
 
-
 class MetricsDisplay:
     """Optimized metrics display with HTML"""
     
@@ -177,7 +176,6 @@ class MetricsDisplay:
             {help_html}
         </div>
         """
-
 
 class OptimizedGrid:
     """Optimized AgGrid renderer"""

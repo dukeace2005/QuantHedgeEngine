@@ -1,10 +1,10 @@
 # app.py
 import streamlit as st
+import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import time
 from datetime import datetime
-import plotly.graph_objects as go
 
 # Import engines
 from engine import QuantOptionEngine, QuantHedgeEngine
@@ -52,6 +52,8 @@ if 'base_report' not in st.session_state:
     st.session_state.base_report = None
 if 'report' not in st.session_state:
     st.session_state.report = None
+if 'selected_history_ticker' not in st.session_state:
+    st.session_state.selected_history_ticker = None
 
 # Initialize database
 conn = init_database()
@@ -83,15 +85,18 @@ with st.sidebar:
         
         run_analysis = st.button("Run Options Analysis", type="primary", use_container_width=True)
     
-    # Recent history badges
-    recent_tickers = get_recent_tickers(conn, 10)
-    if recent_tickers:
-        st.markdown("### 📋 **Recently Viewed**")
-        for i in range(0, len(recent_tickers), 2):
-            cols = st.columns(2)
-            for j in range(2):
-                if i + j < len(recent_tickers):
-                    item = recent_tickers[i + j]
+    # Recently viewed - ONLY 3 BADGES (history items #2, #3, #4)
+    recent_tickers = get_recent_tickers(conn, 5)  # Get 5, we'll use indices 1,2,3 (2nd, 3rd, 4th)
+    if len(recent_tickers) > 1:  # Only show if we have at least 2 items
+        st.markdown("### 🔍 **Quick View**")
+        
+        # Get items 2,3,4 (indices 1,2,3)
+        quick_items = recent_tickers[1:4] if len(recent_tickers) >= 4 else recent_tickers[1:]
+        
+        if quick_items:
+            cols = st.columns(3)
+            for idx, item in enumerate(quick_items):
+                with cols[idx]:
                     time_str = pd.to_datetime(item['timestamp']).strftime('%H:%M')
                     signal_emoji = {'BUY': '🟢', 'HOLD': '🟡', 'AVOID': '🔴'}.get(item['signal'], '⚪')
                     
@@ -105,9 +110,9 @@ with st.sidebar:
                         change_icon = '•'
                     
                     if st.button(
-                        f"{signal_emoji} {item['ticker']}  {item['score']}  {change_icon}{price_display}",
-                        key=f"badge_{item['ticker']}_{i+j}",
-                        help=f"Loaded: {time_str}",
+                        f"{signal_emoji} {item['ticker']}\n{item['score']} {change_icon}{price_display}",
+                        key=f"quick_{item['ticker']}",
+                        help=f"Load {item['ticker']} from {time_str}",
                         use_container_width=True
                     ):
                         ticker_input = item['ticker']
@@ -161,6 +166,13 @@ if refresh_key and st.session_state.current_ticker:
     st.cache_data.clear()
     ticker_input = st.session_state.current_ticker
     run_analysis = True
+    st.rerun()
+
+# Handle history row selection
+if st.session_state.selected_history_ticker:
+    ticker_input = st.session_state.selected_history_ticker
+    run_analysis = True
+    st.session_state.selected_history_ticker = None
     st.rerun()
 
 # Load most recent from cache on startup
@@ -694,29 +706,36 @@ if run_analysis or st.session_state.current_ticker:
             if history:
                 history_df = pd.DataFrame(history)
                 history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%H:%M %m/%d')
+                history_df['select'] = "▶️ Load"  # Add a button column
                 
                 if 'current_price' in history_df.columns:
                     history_df['price'] = history_df['current_price'].apply(
                         lambda x: f"${x:.2f}" if pd.notna(x) and x is not None else 'N/A'
                     )
-                    display_cols = ['ticker', 'price', 'score', 'signal', 'timestamp']
+                    display_cols = ['select', 'ticker', 'price', 'score', 'signal', 'timestamp']
                 else:
-                    display_cols = ['ticker', 'score', 'signal', 'timestamp']
+                    display_cols = ['select', 'ticker', 'score', 'signal', 'timestamp']
                 
-                st.dataframe(
-                    history_df[display_cols],
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "score": st.column_config.ProgressColumn(
-                            "Score",
-                            format="%d/100",
-                            min_value=0,
-                            max_value=100
-                        ),
-                        "signal": st.column_config.TextColumn("Signal"),
-                    }
-                )
+                # Display as dataframe with clickable buttons
+                for idx, row in history_df.iterrows():
+                    cols = st.columns([1, 2, 2, 1, 1, 2])
+                    cols[0].markdown(f"**{row['select']}**")
+                    cols[1].markdown(f"**{row['ticker']}**")
+                    cols[2].markdown(row.get('price', 'N/A'))
+                    cols[3].markdown(f"**{row['score']}**")
+                    
+                    # Signal with color
+                    signal_color = '#00FF88' if row['signal'] == 'BUY' else '#FFA500' if row['signal'] == 'HOLD' else '#FF4444'
+                    cols[4].markdown(f"<span style='color: {signal_color}; font-weight: bold;'>{row['signal']}</span>", unsafe_allow_html=True)
+                    
+                    cols[5].markdown(row['timestamp'])
+                    
+                    # Load button
+                    if cols[0].button("Load", key=f"load_{row['ticker']}_{idx}"):
+                        st.session_state.selected_history_ticker = row['ticker']
+                        st.rerun()
+                    
+                    st.markdown("---")
                 
                 if st.button("Clear Cache", use_container_width=True):
                     c = conn.cursor()
