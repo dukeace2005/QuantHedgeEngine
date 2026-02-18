@@ -10,6 +10,7 @@ from datetime import datetime
 from engine import QuantOptionEngine, QuantHedgeEngine
 
 # Import modules
+from index_funds import QuantAgent
 from calculations import DataProcessor, OptionsCalculator, track_time
 from ui_components import ChartRenderer, MetricsDisplay, OptimizedGrid
 from database import init_database, save_to_cache, load_from_cache, get_recent_tickers
@@ -72,7 +73,7 @@ with st.sidebar:
         st.markdown("## **Analysis Controls**")
     with col2:
         st.markdown("")
-        refresh_key = st.button("🔄", help="Refresh current analysis", key="refresh_btn", use_container_width=True)
+        refresh_key = st.button("🔄", help="Refresh current analysis", key="refresh_btn", width="stretch")
     
     with st.container():
         st.markdown("**Ticker Symbol**")
@@ -83,7 +84,7 @@ with st.sidebar:
             help="Enter stock symbol (e.g., AAPL, MSFT, SPY)"
         ).upper().strip()
         
-        run_analysis = st.button("Run Options Analysis", type="primary", use_container_width=True)
+        run_analysis = st.button("Run Options Analysis", type="primary", width="stretch")
     
     # Recently viewed - ONLY 3 BADGES (history items #2, #3, #4)
     recent_tickers = get_recent_tickers(conn, 5)  # Get 5, we'll use indices 1,2,3 (2nd, 3rd, 4th)
@@ -113,7 +114,7 @@ with st.sidebar:
                         f"{signal_emoji} {item['ticker']}\n{item['score']} {change_icon}{price_display}",
                         key=f"quick_{item['ticker']}",
                         help=f"Load {item['ticker']} from {time_str}",
-                        use_container_width=True
+                        width="stretch"
                     ):
                         ticker_input = item['ticker']
                         run_analysis = True
@@ -313,11 +314,12 @@ if run_analysis or st.session_state.current_ticker:
                 st.caption(f"⚖️ R/R: {trade_params.get('risk_reward', 1.5):.1f}")
         
         # --- MAIN TABS ---
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📈 **Strategy Comparison**", 
             "📊 **Options Chain**", 
             "📋 **Risk Analysis**",
-            "📜 **History**"
+            "📜 **History**",
+            "💵 **Index Fund CSP**"
         ])
         
         with tab1:
@@ -328,11 +330,10 @@ if run_analysis or st.session_state.current_ticker:
                 "Aggressive": (0.30, 0.70)
             }
             put_min_prob, put_max_prob = risk_ranges[risk_tolerance]
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 💰 **Cash Secured Put**")
+
+            with st.container():
+                put_header = st.empty()
+                put_header.markdown("### 💰 **Cash Secured Put**")
                 with st.container(border=True):
                     with track_time("Put Processing"):
                         puts_df = pd.DataFrame(report['chain_data']['puts'])
@@ -383,6 +384,10 @@ if run_analysis or st.session_state.current_ticker:
                         else:
                             selected = puts_df.iloc[rec_idx]
                         
+                        # Update header with selected option details
+                        expiry_str = selected['expiry_date'].strftime('%b%d %y')
+                        put_header.markdown(f"### 💰 **Sell @{float(selected['strike']):g} {expiry_str}**")
+                        
                         fig = ChartRenderer.create_payoff_chart(
                             'put',
                             selected['strike'],
@@ -391,7 +396,7 @@ if run_analysis or st.session_state.current_ticker:
                             selected.get('score_target', report['price'] * 1.05),
                             selected.get('downside_target', report['price'] * 0.95)
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                         
                         cols = st.columns(4)
                         with cols[0]:
@@ -419,8 +424,9 @@ if run_analysis or st.session_state.current_ticker:
                     else:
                         st.warning("No puts found matching your criteria")
             
-            with col2:
-                st.markdown("### 📈 **Long Call**")
+            with st.container():
+                call_header = st.empty()
+                call_header.markdown("### 📈 **Long Call**")
                 with st.container(border=True):
                     with track_time("Call Processing"):
                         calls_df = pd.DataFrame(report['chain_data']['calls'])
@@ -474,6 +480,10 @@ if run_analysis or st.session_state.current_ticker:
                         else:
                             selected = calls_df.iloc[rec_idx]
                         
+                        # Update header with selected option details
+                        expiry_str = selected['expiry_date'].strftime('%b%d %y')
+                        call_header.markdown(f"### 📈 **Buy @{float(selected['strike']):g} {expiry_str}**")
+                        
                         fig = ChartRenderer.create_payoff_chart(
                             'call',
                             selected['strike'],
@@ -482,7 +492,7 @@ if run_analysis or st.session_state.current_ticker:
                             selected.get('score_target', report['price'] * 1.2),
                             selected.get('downside_target', report['price'] * 0.95)
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                         
                         cols = st.columns(4)
                         with cols[0]:
@@ -532,26 +542,42 @@ if run_analysis or st.session_state.current_ticker:
                 exp_puts = all_puts[all_puts['expiry'] == selected_expiry].copy()
                 
                 if not exp_calls.empty and not exp_puts.empty:
-                    display_calls = exp_calls[['strike', 'lastPrice', 'bid', 'ask', 'impliedVolatility', 'volume', 'openInterest']].copy()
-                    display_puts = exp_puts[['strike', 'lastPrice', 'bid', 'ask', 'impliedVolatility', 'volume', 'openInterest']].copy()
+                    # Add probability metrics for full-chain view.
+                    exp_calls['option_type'] = 'call'
+                    exp_puts['option_type'] = 'put'
+                    exp_calls = st.session_state.data_processor.calculator.calculate_chain_metrics_vectorized(
+                        exp_calls,
+                        report['price']
+                    )
+                    exp_puts = st.session_state.data_processor.calculator.calculate_chain_metrics_vectorized(
+                        exp_puts,
+                        report['price']
+                    )
+
+                    display_calls = exp_calls[['strike', 'prob_otm', 'impliedVolatility', 'volume', 'openInterest']].copy()
+                    display_puts = exp_puts[['strike', 'prob_otm', 'impliedVolatility', 'volume', 'openInterest']].copy()
                     
-                    display_calls.columns = ['Strike', 'Call Price', 'Call Bid', 'Call Ask', 'Call IV', 'Call Vol', 'Call OI']
-                    display_puts.columns = ['Strike', 'Put Price', 'Put Bid', 'Put Ask', 'Put IV', 'Put Vol', 'Put OI']
+                    display_calls.columns = ['Strike', 'Call Prob.OTM', 'Call IV', 'Call Vol', 'Call OI']
+                    display_puts.columns = ['Strike', 'Put Prob.OTM', 'Put IV', 'Put Vol', 'Put OI']
                     
                     chain_view = pd.merge(display_calls, display_puts, on='Strike', how='outer')
-                    chain_view = chain_view.sort_values('Strike').round(2)
+                    chain_view = chain_view.sort_values('Strike')
                     
+                    # Convert probabilities/IV to percentages before rounding to avoid zeroing small values.
+                    chain_view['Call Prob.OTM'] = chain_view['Call Prob.OTM'] * 100
+                    chain_view['Put Prob.OTM'] = chain_view['Put Prob.OTM'] * 100
                     chain_view['Call IV'] = chain_view['Call IV'] * 100
                     chain_view['Put IV'] = chain_view['Put IV'] * 100
+                    chain_view = chain_view.round(2)
                     
                     st.dataframe(
                         chain_view,
-                        use_container_width=True,
+                        width="stretch",
                         height=500,
                         column_config={
                             "Strike": st.column_config.NumberColumn("Strike", format="$%.2f"),
-                            "Call Price": st.column_config.NumberColumn("Call", format="$%.2f"),
-                            "Put Price": st.column_config.NumberColumn("Put", format="$%.2f"),
+                            "Call Prob.OTM": st.column_config.NumberColumn("Prob.OTM", format="%.1f%%"),
+                            "Put Prob.OTM": st.column_config.NumberColumn("Prob.OTM", format="%.1f%%"),
                             "Call IV": st.column_config.NumberColumn("Call IV", format="%.1f%%"),
                             "Put IV": st.column_config.NumberColumn("Put IV", format="%.1f%%"),
                         }
@@ -581,7 +607,7 @@ if run_analysis or st.session_state.current_ticker:
                         template="plotly_dark",
                         height=400
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.warning("No options data for selected expiry")
             else:
@@ -674,7 +700,7 @@ if run_analysis or st.session_state.current_ticker:
                         ]
                     })
                     
-                    st.dataframe(greeks_df, use_container_width=True, hide_index=True)
+                    st.dataframe(greeks_df, width="stretch", hide_index=True)
                     
                     with st.expander("📚 **Understanding Greeks**"):
                         st.markdown("""
@@ -737,7 +763,7 @@ if run_analysis or st.session_state.current_ticker:
                     
                     st.markdown("---")
                 
-                if st.button("Clear Cache", use_container_width=True):
+                if st.button("Clear Cache", width="stretch"):
                     c = conn.cursor()
                     c.execute('DELETE FROM analysis_cache')
                     conn.commit()
@@ -748,6 +774,73 @@ if run_analysis or st.session_state.current_ticker:
                     st.rerun()
             else:
                 st.info("No analysis history yet. Run some analyses to see them here.")
+        
+        with tab5:
+            st.markdown("### Index Fund CSP Signal Generator")
+            st.caption("Batch audit for index funds/leveraged ETFs with a combined report.")
+
+            default_funds = ["XLI", "XLF", "TQQQ", "SPYM", "UPRO", "SOXL"]
+            custom_tickers = st.text_input(
+                "Tickers (comma-separated)",
+                value=", ".join(default_funds),
+                help="Example: XLI, XLF, TQQQ",
+                key="index_funds_ticker_input"
+            )
+            run_index_analysis = st.button("Run Multi-Ticker Audit", key="run_multi_index_signal", width="stretch")
+
+            if run_index_analysis:
+                tickers = [t.strip().upper() for t in custom_tickers.split(",") if t.strip()]
+                tickers = list(dict.fromkeys(tickers))
+
+                if not tickers:
+                    st.warning("Please provide at least one ticker.")
+                else:
+                    with st.spinner(f"Analyzing {len(tickers)} ticker(s)..."):
+                        agent = QuantAgent(tickers)
+                        st.session_state.index_fund_multi_result = agent.run_audit()
+                        st.session_state.index_fund_multi_tickers = tickers
+
+            if "index_fund_multi_result" in st.session_state:
+                results = st.session_state.index_fund_multi_result
+                if not results:
+                    st.warning("No valid index fund data returned.")
+                else:
+                    display_data = []
+                    for ticker, val in results.items():
+                        strategy = val.get("strategy", {})
+                        display_data.append({
+                            "Ticker": ticker,
+                            "Signal": val.get("signal", "N/A"),
+                            "Status": val.get("status", "N/A"),
+                            "Price": val.get("price", np.nan),
+                            "RSI": val.get("rsi", np.nan),
+                            "SMA 50": val.get("sma_50", np.nan),
+                            "Delta": strategy.get("strike_delta", np.nan)
+                        })
+
+                    df = pd.DataFrame(display_data)
+
+                    st.subheader("Combined Market Audit")
+                    st.table(df)
+
+                    sell_count = int((df["Status"] == "SELL").sum()) if "Status" in df.columns else 0
+                    skip_count = int((df["Status"] == "SKIP").sum()) if "Status" in df.columns else 0
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Tickers Analyzed", len(df))
+                    c2.metric("SELL Signals", sell_count)
+                    c3.metric("SKIP Signals", skip_count)
+
+                    st.header("Strategic Insights")
+                    for ticker, val in results.items():
+                        signal = val.get("signal", "N/A")
+                        with st.expander(f"Detailed Analysis: {ticker} ({signal})"):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                st.markdown("**Audit Analysis & Reasoning**")
+                                st.info(val.get("audit_analysis", "No analysis available."))
+                            with c2:
+                                st.markdown("**Strategy Recommendation**")
+                                st.success(val.get("strategy_recommendation", "No recommendation available."))
 
 # Welcome screen
 else:

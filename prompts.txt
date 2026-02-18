@@ -1,0 +1,7 @@
+Prompt: "Initialize as a Quant Trading Agent. Using the provided Python skeleton, expand the QuantAgent to include a full backtesting engine.
+Objectives:
+Load 5 years of daily data for [XLI, XLF, TQQQ, SPYM, UPRO, SOXL].
+Simulate 45 DTE Cash Secured Puts.
+Implement 'Management at 21 DTE' and '50% Profit Target' logic.
+Model Improvement: Analyze periods where the 'Very Bullish' signal failed. Propose a secondary filter (e.g., VIX threshold or a 2-state Markov Chain) to eliminate entries during high-volatility regime shifts.
+Output a JSON performance report for each ticker including Win Rate, CAGR, and Max Drawdown."

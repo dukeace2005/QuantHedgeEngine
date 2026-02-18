@@ -209,7 +209,7 @@ class OptimizedGrid:
             resizable=True,
             sortable=True,
             filter=False,
-            cellStyle={'background': '#2D2D2D', 'color': '#FFFFFF'}
+            cellStyle={'color': '#111111', 'borderColor': '#dcdcdc'}
         )
         
         # Hide row_id
@@ -227,12 +227,12 @@ class OptimizedGrid:
             suppressRowClickSelection=False,
             rowHeight=35,
             headerHeight=40,
-            rowStyle={'background': '#2D2D2D'},
             getRowStyle=JsCode("""
                 function(params) {
                     if (params.node && params.node.selected) {
                         return { 
                             backgroundColor: 'rgba(0, 191, 255, 0.3) !important',
+                            color: '#111111',
                             fontWeight: 'bold',
                             borderLeft: '3px solid #00BFFF'
                         };
@@ -240,24 +240,30 @@ class OptimizedGrid:
                     if (params.data && params.data.row_id === params.context.selectedRow) {
                         return { 
                             backgroundColor: 'rgba(0, 191, 255, 0.3) !important',
+                            color: '#111111',
                             fontWeight: 'bold',
                             borderLeft: '3px solid #00BFFF'
                         };
                     }
-                    return { backgroundColor: '#2D2D2D' };
+                    if (params.rowIndex % 2 === 0) {
+                        return { backgroundColor: '#ffffff', color: '#111111' };
+                    }
+                    return { backgroundColor: '#f2f2f2', color: '#111111' };
                 }
             """),
             onFirstDataRendered=JsCode(
                 f"""
                 function(params) {{
                     setTimeout(function() {{
-                        const idx = {safe_idx};
-                        params.api.forEachNode(function(node) {{
-                            if (node.rowIndex === idx) {{
-                                node.setSelected(true);
-                                params.api.ensureIndexVisible(idx, 'middle');
-                            }}
-                        }});
+                        if (params && params.api) {{
+                            const idx = {safe_idx};
+                            params.api.forEachNode(function(node) {{
+                                if (node.rowIndex === idx) {{
+                                    node.setSelected(true);
+                                    params.api.ensureIndexVisible(idx, 'middle');
+                                }}
+                            }});
+                        }}
                     }}, 100);
                 }}
                 """
@@ -278,6 +284,20 @@ class OptimizedGrid:
             update_on=['selectionChanged'],
             key=key,
             theme='streamlit',
+            custom_css={
+                ".ag-header": {
+                    "background-color": "#e6e6e6 !important",
+                    "border-bottom": "1px solid #d0d0d0 !important"
+                },
+                ".ag-header-cell-text": {
+                    "color": "#111111 !important",
+                    "font-weight": "600 !important"
+                },
+                ".ag-cell": {
+                    "color": "#111111 !important",
+                    "border-color": "#dcdcdc !important"
+                }
+            },
             reload_data=True  # Force reload to ensure highlighting
         )
         

@@ -227,3 +227,44 @@ div[data-testid="stSidebar"] .stButton button:active {
 .stMarkdown {
     margin-bottom: 0 !important;
 }
+
+/* Global table styling: zebra rows for all tables */
+div[data-testid="stTable"] table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    color: #111 !important;
+}
+
+div[data-testid="stTable"] thead th {
+    background: #e6e6e6 !important;
+    color: #111 !important;
+    border: 1px solid #d0d0d0 !important;
+}
+
+div[data-testid="stTable"] tbody tr:nth-child(even) td {
+    background: #ffffff !important;
+    color: #111 !important;
+}
+
+div[data-testid="stTable"] tbody tr:nth-child(odd) td {
+    background: #f2f2f2 !important;
+    color: #111 !important;
+}
+
+div[data-testid="stTable"] td,
+div[data-testid="stTable"] th {
+    border: 1px solid #dcdcdc !important;
+}
+
+/* Apply zebra styling to Streamlit dataframe grid rows */
+div[data-testid="stDataFrame"] [role="row"] [role="gridcell"] {
+    color: #111 !important;
+}
+
+div[data-testid="stDataFrame"] [role="row"]:nth-child(even) [role="gridcell"] {
+    background: #ffffff !important;
+}
+
+div[data-testid="stDataFrame"] [role="row"]:nth-child(odd) [role="gridcell"] {
+    background: #f2f2f2 !important;
+}
