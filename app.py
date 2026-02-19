@@ -4,13 +4,16 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 import time
+import webbrowser
 from datetime import datetime
+from urllib.parse import quote_plus
 
 # Import engines
 from engine import QuantOptionEngine, QuantHedgeEngine
 
 # Import modules
 from index_funds import QuantAgent
+from brokerage_interface import SchwabInterface
 from calculations import DataProcessor, OptionsCalculator, track_time
 from ui_components import ChartRenderer, MetricsDisplay, OptimizedGrid
 from database import init_database, save_to_cache, load_from_cache, get_recent_tickers
@@ -55,6 +58,18 @@ if 'report' not in st.session_state:
     st.session_state.report = None
 if 'selected_history_ticker' not in st.session_state:
     st.session_state.selected_history_ticker = None
+if 'brokerage_connected' not in st.session_state:
+    st.session_state.brokerage_connected = False
+if 'show_auth_flow' not in st.session_state:
+    st.session_state.show_auth_flow = False
+if 'schwab_auth_processed' not in st.session_state:
+    st.session_state.schwab_auth_processed = False
+if 'schwab_auth_pending' not in st.session_state:
+    st.session_state.schwab_auth_pending = False
+if 'schwab_auth_expected_state' not in st.session_state:
+    st.session_state.schwab_auth_expected_state = None
+if 'schwab_auth_launched' not in st.session_state:
+    st.session_state.schwab_auth_launched = False
 
 # Initialize database
 conn = init_database()
@@ -154,6 +169,103 @@ with st.sidebar:
         put_min_prob, put_max_prob = risk_ranges[risk_tolerance]
         st.caption(f"Put OTM range: {put_min_prob:.0%} - {put_max_prob:.0%}")
     
+    # Brokerage Connection
+    st.markdown("### 🏦 **Brokerage Connection**")
+    brokerage_provider = st.selectbox(
+        "Provider", 
+        ["Charles Schwab"], 
+        key="brokerage_select",
+        label_visibility="collapsed"
+    )
+    
+    status_text = "Connected" if st.session_state.brokerage_connected else "Disconnected"
+    action_text = "Disconnect" if st.session_state.brokerage_connected else "Connect"
+    auth_btn_label = f"🔌 {action_text}"
+    if st.button(auth_btn_label, use_container_width=True, key="brokerage_connect_toggle"):
+        if st.session_state.brokerage_connected:
+            st.session_state.brokerage_connected = False
+            st.session_state.show_auth_flow = False
+            st.session_state.schwab_auth_pending = False
+            st.session_state.schwab_auth_processed = False
+            st.session_state.schwab_auth_expected_state = None
+            st.session_state.schwab_auth_launched = False
+            st.query_params.clear()
+            st.rerun()
+        elif brokerage_provider == "Charles Schwab":
+            interface = SchwabInterface()
+            success, msg = interface.authenticate_from_token()
+            if success:
+                st.session_state.brokerage_connected = True
+                st.session_state.show_auth_flow = False
+                st.session_state.schwab_auth_pending = False
+                st.session_state.schwab_auth_processed = False
+                st.session_state.schwab_auth_expected_state = None
+                st.session_state.schwab_auth_launched = False
+                st.query_params.clear()
+                st.rerun()
+            else:
+                st.session_state.show_auth_flow = True
+                st.session_state.schwab_auth_processed = False
+                st.session_state.schwab_auth_pending = True
+                st.session_state.schwab_auth_expected_state = None
+                st.session_state.schwab_auth_launched = False
+                st.rerun()
+
+    code = st.query_params.get("code")
+    state = st.query_params.get("state")
+    has_oauth_callback = bool(code and state)
+
+    if (st.session_state.get("show_auth_flow") or has_oauth_callback) and not st.session_state.brokerage_connected:
+        interface = SchwabInterface()
+
+        if (
+            code and state
+            and not st.session_state.get("schwab_auth_processed", False)
+        ):
+            expected_state = st.session_state.get("schwab_auth_expected_state")
+            if (
+                expected_state
+                and st.session_state.get("schwab_auth_pending", False)
+                and str(state) != expected_state
+            ):
+                st.warning("Ignoring stale OAuth callback. Please use the current authorize link.")
+                st.query_params.clear()
+                st.session_state.schwab_auth_processed = False
+                st.stop()
+            st.session_state.show_auth_flow = True
+            st.session_state.schwab_auth_pending = True
+            st.session_state.schwab_auth_processed = True
+            callback_url = (
+                f"{interface.redirect_url}"
+                f"?code={quote_plus(str(code))}&state={quote_plus(str(state))}"
+            )
+            success, msg = interface.authenticate_from_url(callback_url)
+            if success:
+                st.session_state.brokerage_connected = True
+                st.session_state.show_auth_flow = False
+                st.session_state.schwab_auth_pending = False
+                st.session_state.schwab_auth_expected_state = None
+                st.session_state.schwab_auth_launched = False
+                st.query_params.clear()
+                st.rerun()
+            else:
+                st.session_state.schwab_auth_pending = False
+                st.session_state.schwab_auth_expected_state = None
+                st.session_state.schwab_auth_launched = False
+                st.query_params.clear()
+                st.error(msg)
+        elif st.session_state.get("show_auth_flow") and st.session_state.get("schwab_auth_pending", False):
+            auth_url = interface.get_auth_url()
+            auth_context = st.session_state.get("schwab_auth_context")
+            if auth_context is not None:
+                expected_state = getattr(auth_context, "state", None)
+                st.session_state.schwab_auth_expected_state = str(expected_state) if expected_state is not None else None
+            if not st.session_state.get("schwab_auth_launched", False):
+                webbrowser.open(auth_url, new=0)
+                st.session_state.schwab_auth_launched = True
+            st.info("Opened Schwab authorization in your browser. Complete login to continue.")
+            st.stop()
+
     # Footer
     st.markdown("<br>" * 15, unsafe_allow_html=True)
     st.markdown("---")
@@ -554,11 +666,11 @@ if run_analysis or st.session_state.current_ticker:
                         report['price']
                     )
 
-                    display_calls = exp_calls[['strike', 'prob_otm', 'impliedVolatility', 'volume', 'openInterest']].copy()
-                    display_puts = exp_puts[['strike', 'prob_otm', 'impliedVolatility', 'volume', 'openInterest']].copy()
+                    display_calls = exp_calls[['strike', 'lastPrice', 'prob_otm', 'impliedVolatility', 'volume', 'openInterest']].copy()
+                    display_puts = exp_puts[['strike', 'lastPrice', 'prob_otm', 'impliedVolatility', 'volume', 'openInterest']].copy()
                     
-                    display_calls.columns = ['Strike', 'Call Prob.OTM', 'Call IV', 'Call Vol', 'Call OI']
-                    display_puts.columns = ['Strike', 'Put Prob.OTM', 'Put IV', 'Put Vol', 'Put OI']
+                    display_calls.columns = ['Strike', 'Call Premium', 'Call Prob.OTM', 'Call IV', 'Call Vol', 'Call OI']
+                    display_puts.columns = ['Strike', 'Put Premium', 'Put Prob.OTM', 'Put IV', 'Put Vol', 'Put OI']
                     
                     chain_view = pd.merge(display_calls, display_puts, on='Strike', how='outer')
                     chain_view = chain_view.sort_values('Strike')
@@ -576,6 +688,8 @@ if run_analysis or st.session_state.current_ticker:
                         height=500,
                         column_config={
                             "Strike": st.column_config.NumberColumn("Strike", format="$%.2f"),
+                            "Call Premium": st.column_config.NumberColumn("Call Premium", format="$%.2f"),
+                            "Put Premium": st.column_config.NumberColumn("Put Premium", format="$%.2f"),
                             "Call Prob.OTM": st.column_config.NumberColumn("Prob.OTM", format="%.1f%%"),
                             "Put Prob.OTM": st.column_config.NumberColumn("Prob.OTM", format="%.1f%%"),
                             "Call IV": st.column_config.NumberColumn("Call IV", format="%.1f%%"),
@@ -842,6 +956,7 @@ if run_analysis or st.session_state.current_ticker:
                                 st.markdown("**Strategy Recommendation**")
                                 st.success(val.get("strategy_recommendation", "No recommendation available."))
 
+
 # Welcome screen
 else:
     st.markdown("""
@@ -852,3 +967,4 @@ else:
         </p>
     </div>
     """, unsafe_allow_html=True)
+
