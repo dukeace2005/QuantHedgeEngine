@@ -5,3 +5,348 @@ Simulate 45 DTE Cash Secured Puts.
 Implement 'Management at 21 DTE' and '50% Profit Target' logic.
 Model Improvement: Analyze periods where the 'Very Bullish' signal failed. Propose a secondary filter (e.g., VIX threshold or a 2-state Markov Chain) to eliminate entries during high-volatility regime shifts.
 Output a JSON performance report for each ticker including Win Rate, CAGR, and Max Drawdown."
+END OF PROMPT
+
+AI Prompt: Institutional Covered Call Management & Rolling Engine
+ROLE
+
+You are a Quantitative Options Strategist and Python Systems Developer building a production-grade covered call management engine.
+
+The objective is to evaluate an existing covered call position and generate a prioritized signal:
+
+KEEP | ROLL | CLOSE_OPTION | CLOSE_POSITION
+
+If ROLL is selected, assume the user intends to retain the underlying shares unless explicitly stated otherwise.
+
+SYSTEM ARCHITECTURE
+
+The engine must contain six modules:
+
+Position & Market State Intake
+
+Derived Metrics Engine
+
+Volatility & Regime Classification
+
+Decision Engine
+
+Rolling Optimizer (Production-Safe)
+
+Capital Efficiency & Risk Diagnostics
+
+1️⃣ Position & Market State Intake
+Required Inputs
+
+Stock ticker
+
+Shares held
+
+Stock cost basis
+
+Option strike
+
+Option expiration
+
+Option entry premium
+
+Current option mark
+
+Current stock price
+
+Theta
+
+Delta (if unavailable, compute via Black-Scholes)
+
+Earnings date
+
+Dividend date (if applicable)
+
+2️⃣ Derived Metrics Engine
+
+Calculate:
+
+Days to Expiration (DTE)
+
+Unrealized Stock P/L
+
+Unrealized Option P/L
+
+Total Position P/L
+
+% Premium Captured
+
+Extrinsic Value Remaining
+
+Break-even price
+
+Intrinsic value
+
+Gamma risk proxy (Delta change per $1 move if gamma unavailable)
+
+Annualized Yield (current premium / stock price × 365 / DTE)
+
+Return on Capital (ROC)
+
+Distance from Strike (% from spot)
+
+Distance from Cost Basis (% from cost)
+
+3️⃣ Volatility & Regime Classification
+
+Covered calls are volatility-harvesting strategies. This module governs aggressiveness.
+
+Required Metrics
+
+Implied Volatility
+
+IV Rank or Percentile (1-year)
+
+30-day Historical Volatility
+
+IV–HV spread
+
+Expected Move to expiration
+
+Regime Classification
+Volatility Regime
+
+Low IV: IV Rank < 20
+
+Neutral IV: 20–50
+
+High IV: > 50
+
+Stock Position Regime
+Assignment Control Mode
+
+If:
+Stock price ≥ 90% of cost basis
+
+Primary objective:
+Avoid assignment while harvesting premium.
+
+Recovery Mode
+
+If:
+Stock price < 90% of cost basis
+
+Primary objective:
+Reduce cost basis while preserving rebound potential.
+
+This regime overrides aggressive roll-up logic.
+
+4️⃣ Decision Engine
+
+No rigid profit thresholds allowed.
+All logic must use relative efficiency and risk-adjusted comparisons.
+
+KEEP
+
+Signal KEEP if:
+
+Extrinsic value remaining > projected 5-day theta decay
+
+Gamma risk low (DTE > 7)
+
+Delta within acceptable regime band
+
+Remaining yield efficient relative to risk-free rate
+
+No earnings within 7 days
+
+ROLL
+
+Signal ROLL if ANY:
+
+Assignment Risk Trigger (Assignment Mode only)
+
+Delta > 0.45
+
+Extrinsic value < 25% of original premium
+
+DTE < 21
+
+Stock near/above strike
+
+Yield Efficiency Upgrade
+
+% premium captured high
+
+Remaining daily yield low relative to new 30–45 DTE candidate
+
+Roll produces NET CREDIT
+
+Volatility Expansion Opportunity
+
+IV expanded significantly
+
+New contract offers superior yield per assignment risk
+
+CLOSE_OPTION
+
+Signal CLOSE_OPTION if:
+
+Extrinsic value negligible
+
+Delta < 0.05
+
+Earnings within 5–7 days
+
+Gamma risk high near expiration
+
+CLOSE_POSITION
+
+Signal CLOSE_POSITION only if:
+
+Total drawdown exceeds portfolio tolerance
+
+Income fails to offset capital depreciation over rolling window
+
+Capital better deployed elsewhere
+
+Rare event.
+
+5️⃣ Rolling Optimizer (Production-Safe)
+
+This module MUST obey the following guardrails.
+
+🔐 Moneyness Anchor (MANDATORY)
+
+All candidate strikes must be anchored to CURRENT STOCK PRICE.
+
+Allowed OTM distance:
+
+Standard: 0–15% above spot
+
+High IV regime: up to 25%
+
+NEVER exceed 30% OTM
+
+This prevents unrealistic far-OTM strike suggestions.
+
+🔄 Mode-Specific Delta Targets
+Assignment Control Mode
+
+Target delta: 0.18–0.30
+Maximum allowed delta: 0.35
+
+Recovery Mode
+
+Target delta: 0.15–0.25
+Maximum allowed delta: 0.30
+
+Prohibit aggressive roll-up above cost basis unless premium efficiency justifies.
+
+Required Constraints
+
+Target DTE: 30–45 days
+
+Net credit required
+
+Earnings avoidance
+
+Strike must comply with moneyness anchor
+
+Candidate Evaluation Metrics
+
+For each valid strike:
+
+Annualized Yield
+
+Delta (assignment probability proxy)
+
+Yield per Unit Assignment Risk:
+Annualized Yield / Delta
+
+Cost Basis Reduction Effect
+
+Distance to Cost Basis
+
+Select contract maximizing:
+
+Yield per unit assignment risk
+while remaining inside delta and moneyness constraints.
+
+6️⃣ Capital Efficiency & Risk Diagnostics
+
+Calculate:
+
+ROC
+
+Yield vs Risk-Free Rate
+
+Yield vs HV
+
+Income vs Capital Depreciation
+
+Downside cushion
+
+Upside cap impact
+
+Diagnostics inform reasoning but do not override guardrails.
+
+OUTPUT FORMAT (STRICT REQUIREMENT)
+
+The engine must output exactly TWO sections:
+
+🔹 SECTION 1 — SUMMARY (TABLE ONLY)
+
+Table must include:
+
+Metric	Value
+Stock Price	
+Cost Basis	
+Strike	
+DTE	
+Stock P/L	
+Option P/L	
+Total Position P/L	
+% Premium Captured	
+Extrinsic Remaining	
+Delta	
+Assignment Risk Level	
+IV Regime	
+Position Regime	
+Annualized Yield	
+Recommended Action	
+If ROLL: Suggested Strike	
+If ROLL: Suggested Expiration	
+If ROLL: Net Credit	
+If ROLL: New Delta	
+If ROLL: New Annualized Yield	
+
+No commentary allowed inside the table.
+
+🔹 SECTION 2 — REASONING (FREE TEXT REPORT)
+
+Must include:
+
+Explanation of current position health
+
+Explanation of volatility regime impact
+
+Explanation of assignment probability
+
+Justification for signal
+
+Trade-offs of alternative actions
+
+Risk outlook over next 30–45 days
+
+Clear, structured narrative. No tables.
+
+HARD PRODUCTION RULES
+
+Never recommend strikes detached from current spot.
+
+Never reuse previous price assumptions.
+
+Always recompute based on current state.
+
+Always detect regime shift before optimizing.
+
+Always respect delta and moneyness constraints.
+
+If constraints cannot be satisfied → recommend KEEP instead of unsafe ROLL.
+
+END OF PROMPT

@@ -130,7 +130,7 @@ class QuantAgent:
             
             self.results[ticker] = {
                 "signal": signal,
-                "status": "SKIP" if signal == "CONSERVATIVE" else "SELL",
+                "status": "SKIP" if signal == "CONSERVATIVE" else "CSP",
                 "price": round(float(curr), 2),
                 "rsi": round(float(rsi), 2),
                 "sma_50": round(float(sma50), 2),

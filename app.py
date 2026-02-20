@@ -6,6 +6,7 @@ import numpy as np
 import time
 import webbrowser
 from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
 # Import engines
@@ -16,9 +17,10 @@ from index_funds import QuantAgent
 from brokerage_interface import SchwabInterface
 from calculations import DataProcessor, OptionsCalculator, track_time
 from ui_components import ChartRenderer, MetricsDisplay, OptimizedGrid
-from database import init_database, save_to_cache, load_from_cache, get_recent_tickers
+from database import init_database, save_to_cache, get_recent_tickers
 from market_data import fetch_market_data
 from utils import create_nasdaq_header
+from covered_calls import CoveredCallEngine, PositionInputs, ReportGenerator
 
 # Page config
 st.set_page_config(
@@ -70,6 +72,10 @@ if 'schwab_auth_expected_state' not in st.session_state:
     st.session_state.schwab_auth_expected_state = None
 if 'schwab_auth_launched' not in st.session_state:
     st.session_state.schwab_auth_launched = False
+if 'cc_report' not in st.session_state:
+    st.session_state.cc_report = None
+if 'analysis_mem_cache' not in st.session_state:
+    st.session_state.analysis_mem_cache = {}
 
 # Initialize database
 conn = init_database()
@@ -86,9 +92,6 @@ with st.sidebar:
     col1, col2 = st.columns([6, 1])
     with col1:
         st.markdown("## **Analysis Controls**")
-    with col2:
-        st.markdown("")
-        refresh_key = st.button("🔄", help="Refresh current analysis", key="refresh_btn", width="stretch")
     
     with st.container():
         st.markdown("**Ticker Symbol**")
@@ -101,34 +104,20 @@ with st.sidebar:
         
         run_analysis = st.button("Run Options Analysis", type="primary", width="stretch")
     
-    # Recently viewed - ONLY 3 BADGES (history items #2, #3, #4)
-    recent_tickers = get_recent_tickers(conn, 5)  # Get 5, we'll use indices 1,2,3 (2nd, 3rd, 4th)
-    if len(recent_tickers) > 1:  # Only show if we have at least 2 items
+    # Recently viewed - ticker badges only
+    recent_tickers = get_recent_tickers(conn, 5)
+    if recent_tickers:
         st.markdown("### 🔍 **Quick View**")
-        
-        # Get items 2,3,4 (indices 1,2,3)
-        quick_items = recent_tickers[1:4] if len(recent_tickers) >= 4 else recent_tickers[1:]
-        
+        quick_items = recent_tickers[:3]
+
         if quick_items:
             cols = st.columns(3)
             for idx, item in enumerate(quick_items):
                 with cols[idx]:
-                    time_str = pd.to_datetime(item['timestamp']).strftime('%H:%M')
-                    signal_emoji = {'BUY': '🟢', 'HOLD': '🟡', 'AVOID': '🔴'}.get(item['signal'], '⚪')
-                    
-                    current_price = item.get('current_price')
-                    if current_price is not None and current_price > 0:
-                        price_display = f" ${current_price:.2f}"
-                        change = item.get('change', 0)
-                        change_icon = '▲' if change and change > 0 else '▼' if change and change < 0 else '•'
-                    else:
-                        price_display = ""
-                        change_icon = '•'
-                    
                     if st.button(
-                        f"{signal_emoji} {item['ticker']}\n{item['score']} {change_icon}{price_display}",
+                        item['ticker'],
                         key=f"quick_{item['ticker']}",
-                        help=f"Load {item['ticker']} from {time_str}",
+                        help=f"Load {item['ticker']}",
                         width="stretch"
                     ):
                         ticker_input = item['ticker']
@@ -269,17 +258,12 @@ with st.sidebar:
     # Footer
     st.markdown("<br>" * 15, unsafe_allow_html=True)
     st.markdown("---")
-    st.caption(f"⚙️ Quant Hedge Engine v2.0 | © 2026 | Cache: {len(recent_tickers)}/20")
+    cache_size = len(get_recent_tickers(conn, 20))
+    st.caption(f"⚙️ Quant Hedge Engine v2.0 | © 2026 | Cache: {cache_size}/20")
 
 # --- MAIN CONTENT ---
 
 # Handle refresh
-if refresh_key and st.session_state.current_ticker:
-    st.session_state.data_processor._processed_cache.clear()
-    st.cache_data.clear()
-    ticker_input = st.session_state.current_ticker
-    run_analysis = True
-    st.rerun()
 
 # Handle history row selection
 if st.session_state.selected_history_ticker:
@@ -288,87 +272,20 @@ if st.session_state.selected_history_ticker:
     st.session_state.selected_history_ticker = None
     st.rerun()
 
-# Load most recent from cache on startup
+# Load most recent ticker from DB on startup
 if not run_analysis and not st.session_state.current_ticker:
     recent = get_recent_tickers(conn, 1)
     if recent:
         st.session_state.current_ticker = recent[0]['ticker']
-        cached = load_from_cache(conn, recent[0]['ticker'])
-        if cached:
-            st.session_state.base_report = cached['base_report']
-            st.session_state.report = cached['report']
-            st.session_state.last_refresh = cached['timestamp']
-            st.session_state.market_data = cached.get('market_data')
+        ticker_input = recent[0]['ticker']
+        run_analysis = True
 
-# Run analysis
-if run_analysis or st.session_state.current_ticker:
-    
-    if run_analysis:
-        st.session_state.current_ticker = ticker_input
-        cached = load_from_cache(conn, ticker_input)
-        cache_age = None
-        if cached:
-            cache_age = (datetime.now() - cached['timestamp']).seconds / 3600 if cached['timestamp'] else None
-        
-        # Use cache if less than 1 hour old
-        if cached and cache_age and cache_age < 1 and not refresh_key:
-            st.session_state.base_report = cached['base_report']
-            st.session_state.report = cached['report']
-            st.session_state.last_refresh = cached['timestamp']
-            st.session_state.market_data = cached.get('market_data')
-            st.success(f"✅ Loaded {ticker_input} from cache ({cache_age:.1f}h old)")
-        else:
-            progress_container = st.empty()
-            status_container = st.empty()
-            
-            with progress_container.container():
-                progress_bar = st.progress(0, text="Initializing...")
-                status_container.info(f"🔍 Analyzing {ticker_input}...")
-            
-            try:
-                # Fetch market data
-                progress_bar.progress(10, text="Fetching market data...")
-                market_data = fetch_market_data(ticker_input)
-                
-                # Fundamental analysis
-                progress_bar.progress(20, text="Running fundamental analysis...")
-                base_report = hedge_engine.analyze_ticker(ticker_input)
-                
-                if not base_report or 'error' in base_report:
-                    raise Exception(base_report.get('error', 'Unknown error'))
-                
-                # Options analysis
-                progress_bar.progress(50, text="Scanning options chain...")
-                total_score = base_report.get('verdict', {}).get('score', 50)
-                report = option_engine.get_option_recommendations(ticker_input, total_score, 100000)
-                
-                if 'error' in report:
-                    raise Exception(report['error'])
-                
-                # Cache results
-                progress_bar.progress(80, text="Caching results...")
-                signal = base_report.get('verdict', {}).get('signal', 'HOLD')
-                st.session_state.market_data = market_data
-                save_to_cache(conn, ticker_input, base_report, report, total_score, signal, market_data)
-                
-                # Store in session state
-                st.session_state.base_report = base_report
-                st.session_state.report = report
-                st.session_state.last_refresh = datetime.now()
-                
-                # Complete
-                progress_bar.progress(100, text="Complete!")
-                status_container.success(f"✅ Analysis complete for {ticker_input}")
-                time.sleep(1)
-                progress_container.empty()
-                status_container.empty()
-                
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-                st.stop()
-    
-    # Display analysis if we have it
-    if st.session_state.report and st.session_state.base_report:
+analysis_requested = bool(run_analysis)
+if analysis_requested:
+    st.session_state.current_ticker = ticker_input
+
+# Display analysis if we have it
+if st.session_state.report and st.session_state.base_report:
         report = st.session_state.report
         base_report = st.session_state.base_report
         market_data = st.session_state.market_data
@@ -426,12 +343,13 @@ if run_analysis or st.session_state.current_ticker:
                 st.caption(f"⚖️ R/R: {trade_params.get('risk_reward', 1.5):.1f}")
         
         # --- MAIN TABS ---
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📈 **Strategy Comparison**", 
             "📊 **Options Chain**", 
             "📋 **Risk Analysis**",
             "📜 **History**",
-            "💵 **Index Fund CSP**"
+            "💵 **Index Fund CSP**",
+            "⚙️ **Covered Calls**"
         ])
         
         with tab1:
@@ -844,38 +762,13 @@ if run_analysis or st.session_state.current_ticker:
             
             history = get_recent_tickers(conn, 20)
             if history:
-                history_df = pd.DataFrame(history)
-                history_df['timestamp'] = pd.to_datetime(history_df['timestamp']).dt.strftime('%H:%M %m/%d')
-                history_df['select'] = "▶️ Load"  # Add a button column
-                
-                if 'current_price' in history_df.columns:
-                    history_df['price'] = history_df['current_price'].apply(
-                        lambda x: f"${x:.2f}" if pd.notna(x) and x is not None else 'N/A'
-                    )
-                    display_cols = ['select', 'ticker', 'price', 'score', 'signal', 'timestamp']
-                else:
-                    display_cols = ['select', 'ticker', 'score', 'signal', 'timestamp']
-                
-                # Display as dataframe with clickable buttons
-                for idx, row in history_df.iterrows():
-                    cols = st.columns([1, 2, 2, 1, 1, 2])
-                    cols[0].markdown(f"**{row['select']}**")
-                    cols[1].markdown(f"**{row['ticker']}**")
-                    cols[2].markdown(row.get('price', 'N/A'))
-                    cols[3].markdown(f"**{row['score']}**")
-                    
-                    # Signal with color
-                    signal_color = '#00FF88' if row['signal'] == 'BUY' else '#FFA500' if row['signal'] == 'HOLD' else '#FF4444'
-                    cols[4].markdown(f"<span style='color: {signal_color}; font-weight: bold;'>{row['signal']}</span>", unsafe_allow_html=True)
-                    
-                    cols[5].markdown(row['timestamp'])
-                    
-                    # Load button
-                    if cols[0].button("Load", key=f"load_{row['ticker']}_{idx}"):
-                        st.session_state.selected_history_ticker = row['ticker']
-                        st.rerun()
-                    
-                    st.markdown("---")
+                st.caption("Click a ticker badge to load analysis and update the header.")
+                cols = st.columns(5)
+                for idx, row in enumerate(history):
+                    with cols[idx % 5]:
+                        if st.button(row['ticker'], key=f"history_badge_{row['ticker']}_{idx}", width="stretch"):
+                            st.session_state.selected_history_ticker = row['ticker']
+                            st.rerun()
                 
                 if st.button("Clear Cache", width="stretch"):
                     c = conn.cursor()
@@ -885,6 +778,7 @@ if run_analysis or st.session_state.current_ticker:
                     st.session_state.market_data = None
                     st.session_state.base_report = None
                     st.session_state.report = None
+                    st.session_state.analysis_mem_cache = {}
                     st.rerun()
             else:
                 st.info("No analysis history yet. Run some analyses to see them here.")
@@ -937,11 +831,11 @@ if run_analysis or st.session_state.current_ticker:
                     st.subheader("Combined Market Audit")
                     st.table(df)
 
-                    sell_count = int((df["Status"] == "SELL").sum()) if "Status" in df.columns else 0
+                    sell_count = int((df["Status"] == "CSP").sum()) if "Status" in df.columns else 0
                     skip_count = int((df["Status"] == "SKIP").sum()) if "Status" in df.columns else 0
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Tickers Analyzed", len(df))
-                    c2.metric("SELL Signals", sell_count)
+                    c2.metric("CSP Signals", sell_count)
                     c3.metric("SKIP Signals", skip_count)
 
                     st.header("Strategic Insights")
@@ -956,15 +850,345 @@ if run_analysis or st.session_state.current_ticker:
                                 st.markdown("**Strategy Recommendation**")
                                 st.success(val.get("strategy_recommendation", "No recommendation available."))
 
+        with tab6:
+            st.markdown("### Covered Call Strategy Engine")
+            st.caption("Analyze covered call positions for optimal management (roll, close, or hold).")
 
-# Welcome screen
+            st.markdown("#### **Input Position for Analysis**")
+            if 'cc_input_df' not in st.session_state:
+                st.session_state.cc_input_df = pd.DataFrame({
+                    "Parameter": [
+                        "Ticker", "Shares Held", "Stock Cost Basis", "Current Stock Price",
+                        "Option Strike", "Option Expiration (DTE)", "Option Entry Premium", "Current Option Mark",
+                        "Implied Volatility (IV)", "IV Rank"
+                    ],
+                    "Value": [
+                        "USAR", "100", "22.50", "18.30",
+                        "24.50", "21",
+                        "1.12", "0.66", "1.03", "5.38"
+                    ]
+                })
+
+            st.session_state.cc_input_df = st.data_editor(
+                st.session_state.cc_input_df,
+                key="cc_input_editor",
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed",
+                column_config={
+                    "Parameter": st.column_config.TextColumn("Parameter", disabled=True),
+                    "Value": st.column_config.TextColumn("Value")
+                }
+            )
+
+            st.markdown("#### **Backtest Strikes (10 Values)**")
+            try:
+                _cc_current_price_for_strikes = float(
+                    dict(zip(st.session_state.cc_input_df["Parameter"], st.session_state.cc_input_df["Value"]))["Current Stock Price"]
+                )
+            except (KeyError, TypeError, ValueError):
+                _cc_current_price_for_strikes = 18.30
+
+            # Build 10 strikes around current price in $0.50 increments.
+            _cc_default_offsets = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]
+            _cc_default_strikes = [round(_cc_current_price_for_strikes + offset, 2) for offset in _cc_default_offsets]
+
+            if 'cc_backtest_strikes_df' not in st.session_state:
+                st.session_state.cc_backtest_strikes_df = pd.DataFrame({
+                    "Strike": _cc_default_strikes
+                })
+
+            st.session_state.cc_backtest_strikes_df = st.data_editor(
+                st.session_state.cc_backtest_strikes_df,
+                key="cc_backtest_strikes_editor",
+                hide_index=True,
+                use_container_width=True,
+                num_rows="fixed",
+                column_config={
+                    "Strike": st.column_config.NumberColumn("Strike", min_value=0.01, format="%.2f")
+                }
+            )
+
+            run_cc_analysis = st.button("Run Covered Call Backtest", key="run_cc_analysis_btn", use_container_width=True)
+
+            if run_cc_analysis:
+                with st.spinner("Running Covered Call analysis..."):
+                    input_rows = st.session_state.cc_input_df
+                    input_map = dict(zip(input_rows["Parameter"], input_rows["Value"]))
+
+                    try:
+                        cc_ticker = str(input_map["Ticker"]).upper().strip()
+                        cc_shares = int(float(input_map["Shares Held"]))
+                        cc_stock_cost_basis = float(input_map["Stock Cost Basis"])
+                        cc_current_stock_price = float(input_map["Current Stock Price"])
+                        cc_option_strike = float(input_map["Option Strike"])
+                        cc_dte_val = int(float(input_map["Option Expiration (DTE)"]))
+                        cc_option_entry_premium = float(input_map["Option Entry Premium"])
+                        cc_current_option_mark = float(input_map["Current Option Mark"])
+                        cc_iv = float(input_map["Implied Volatility (IV)"])
+                        cc_iv_rank = float(input_map["IV Rank"])
+                    except (KeyError, TypeError, ValueError):
+                        st.error("Invalid input values. Please ensure all fields contain valid numbers (except Ticker).")
+                        st.stop()
+
+                    if cc_shares <= 0 or cc_dte_val < 0:
+                        st.error("Shares must be greater than 0 and DTE cannot be negative.")
+                        st.stop()
+
+                    backtest_strikes_raw = st.session_state.cc_backtest_strikes_df["Strike"].dropna().tolist()
+                    strikes = sorted({float(x) for x in backtest_strikes_raw if float(x) > 0})
+                    if not strikes:
+                        st.error("Please provide at least one valid positive strike in Backtest Strikes.")
+                        st.stop()
+
+                    cc_option_expiration = datetime.now() + timedelta(days=cc_dte_val)
+                    engine = CoveredCallEngine(risk_free_rate=0.05)
+                    inputs = PositionInputs(
+                        ticker=cc_ticker,
+                        shares_held=cc_shares,
+                        stock_cost_basis=cc_stock_cost_basis,
+                        option_strike=cc_option_strike,
+                        option_expiration=cc_option_expiration,
+                        option_entry_premium=cc_option_entry_premium,
+                        current_option_mark=cc_current_option_mark,
+                        current_stock_price=cc_current_stock_price,
+                        iv=cc_iv,
+                        iv_rank=cc_iv_rank
+                    )
+                    expirations = [
+                        datetime.now() + timedelta(days=30),
+                        datetime.now() + timedelta(days=45)
+                    ]
+                    analysis = engine.analyze_position(inputs, strikes, expirations)
+                    report = ReportGenerator().generate_report(analysis)
+                    st.session_state.cc_report = report
+            
+            if st.session_state.cc_report:
+                st.markdown("---")
+                st.markdown("#### **Analysis Report**")
+                st.markdown(st.session_state.cc_report, unsafe_allow_html=True)
+
+
+# Initial-load tabs (no active analysis yet)
 else:
-    st.markdown("""
-    <div style='text-align: center; padding: 2rem;'>
-        <h2 style='color: #00BFFF;'>👋 Welcome to Quant Hedge Options Suite</h2>
-        <p style='color: #888; font-size: 1rem;'>
-            Enter a ticker symbol in the sidebar and click <strong>Run</strong> to start analysis
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📈 **Strategy Comparison**",
+        "📊 **Options Chain**",
+        "📋 **Risk Analysis**",
+        "📜 **History**",
+        "💵 **Index Fund CSP**",
+        "⚙️ **Covered Calls**"
+    ])
 
+    with tab1:
+        st.info("Run Options Analysis to enable this tab.")
+
+    with tab2:
+        st.info("Run Options Analysis to enable this tab.")
+
+    with tab3:
+        st.info("Run Options Analysis to enable this tab.")
+
+    with tab4:
+        st.markdown("### 📜 **Analysis History**")
+        history = get_recent_tickers(conn, 20)
+        if history:
+            st.caption("Click a ticker badge to load analysis and update the header.")
+            cols = st.columns(5)
+            for idx, row in enumerate(history):
+                with cols[idx % 5]:
+                    if st.button(row['ticker'], key=f"history_badge_empty_{row['ticker']}_{idx}", width="stretch"):
+                        st.session_state.selected_history_ticker = row['ticker']
+                        st.rerun()
+            if st.button("Clear Cache", key="clear_cache_empty", width="stretch"):
+                c = conn.cursor()
+                c.execute('DELETE FROM analysis_cache')
+                conn.commit()
+                st.session_state.current_ticker = None
+                st.session_state.market_data = None
+                st.session_state.base_report = None
+                st.session_state.report = None
+                st.session_state.analysis_mem_cache = {}
+                st.rerun()
+        else:
+            st.info("No analysis history yet. Run some analyses to see them here.")
+
+    with tab5:
+        st.info("Run Options Analysis to enable this tab.")
+
+    with tab6:
+        st.markdown("### Covered Call Strategy Engine")
+        st.caption("Analyze covered call positions for optimal management (roll, close, or hold).")
+
+        st.markdown("#### **Input Position for Analysis**")
+        if 'cc_input_df' not in st.session_state:
+            st.session_state.cc_input_df = pd.DataFrame({
+                "Parameter": [
+                    "Ticker", "Shares Held", "Stock Cost Basis", "Current Stock Price",
+                    "Option Strike", "Option Expiration (DTE)", "Option Entry Premium", "Current Option Mark",
+                    "Implied Volatility (IV)", "IV Rank"
+                ],
+                "Value": [
+                    "USAR", "100", "22.50", "18.30",
+                    "24.50", "21",
+                    "1.12", "0.66", "1.03", "5.38"
+                ]
+            })
+
+        st.session_state.cc_input_df = st.data_editor(
+            st.session_state.cc_input_df,
+            key="cc_input_editor_empty",
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            column_config={
+                "Parameter": st.column_config.TextColumn("Parameter", disabled=True),
+                "Value": st.column_config.TextColumn("Value")
+            }
+        )
+
+        st.markdown("#### **Backtest Strikes (10 Values)**")
+        try:
+            _cc_current_price_for_strikes = float(
+                dict(zip(st.session_state.cc_input_df["Parameter"], st.session_state.cc_input_df["Value"]))["Current Stock Price"]
+            )
+        except (KeyError, TypeError, ValueError):
+            _cc_current_price_for_strikes = 18.30
+
+        _cc_default_offsets = [-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5]
+        _cc_default_strikes = [round(_cc_current_price_for_strikes + offset, 2) for offset in _cc_default_offsets]
+
+        if 'cc_backtest_strikes_df' not in st.session_state:
+            st.session_state.cc_backtest_strikes_df = pd.DataFrame({
+                "Strike": _cc_default_strikes
+            })
+
+        st.session_state.cc_backtest_strikes_df = st.data_editor(
+            st.session_state.cc_backtest_strikes_df,
+            key="cc_backtest_strikes_editor_empty",
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            column_config={
+                "Strike": st.column_config.NumberColumn("Strike", min_value=0.01, format="%.2f")
+            }
+        )
+
+        run_cc_analysis = st.button("Run Covered Call Backtest", key="run_cc_analysis_btn_empty", use_container_width=True)
+
+        if run_cc_analysis:
+            with st.spinner("Running Covered Call analysis..."):
+                input_rows = st.session_state.cc_input_df
+                input_map = dict(zip(input_rows["Parameter"], input_rows["Value"]))
+
+                try:
+                    cc_ticker = str(input_map["Ticker"]).upper().strip()
+                    cc_shares = int(float(input_map["Shares Held"]))
+                    cc_stock_cost_basis = float(input_map["Stock Cost Basis"])
+                    cc_current_stock_price = float(input_map["Current Stock Price"])
+                    cc_option_strike = float(input_map["Option Strike"])
+                    cc_dte_val = int(float(input_map["Option Expiration (DTE)"]))
+                    cc_option_entry_premium = float(input_map["Option Entry Premium"])
+                    cc_current_option_mark = float(input_map["Current Option Mark"])
+                    cc_iv = float(input_map["Implied Volatility (IV)"])
+                    cc_iv_rank = float(input_map["IV Rank"])
+                except (KeyError, TypeError, ValueError):
+                    st.error("Invalid input values. Please ensure all fields contain valid numbers (except Ticker).")
+                    st.stop()
+
+                if cc_shares <= 0 or cc_dte_val < 0:
+                    st.error("Shares must be greater than 0 and DTE cannot be negative.")
+                    st.stop()
+
+                backtest_strikes_raw = st.session_state.cc_backtest_strikes_df["Strike"].dropna().tolist()
+                strikes = sorted({float(x) for x in backtest_strikes_raw if float(x) > 0})
+                if not strikes:
+                    st.error("Please provide at least one valid positive strike in Backtest Strikes.")
+                    st.stop()
+
+                cc_option_expiration = datetime.now() + timedelta(days=cc_dte_val)
+                engine = CoveredCallEngine(risk_free_rate=0.05)
+                inputs = PositionInputs(
+                    ticker=cc_ticker,
+                    shares_held=cc_shares,
+                    stock_cost_basis=cc_stock_cost_basis,
+                    option_strike=cc_option_strike,
+                    option_expiration=cc_option_expiration,
+                    option_entry_premium=cc_option_entry_premium,
+                    current_option_mark=cc_current_option_mark,
+                    current_stock_price=cc_current_stock_price,
+                    iv=cc_iv,
+                    iv_rank=cc_iv_rank
+                )
+                expirations = [
+                    datetime.now() + timedelta(days=30),
+                    datetime.now() + timedelta(days=45)
+                ]
+                analysis = engine.analyze_position(inputs, strikes, expirations)
+                report = ReportGenerator().generate_report(analysis)
+                st.session_state.cc_report = report
+        
+        if st.session_state.cc_report:
+            st.markdown("---")
+            st.markdown("#### **Analysis Report**")
+            st.markdown(st.session_state.cc_report, unsafe_allow_html=True)
+
+# Defer analysis execution until after page layout is rendered so tabs stay visible.
+if analysis_requested:
+    cached = st.session_state.analysis_mem_cache.get(ticker_input)
+    cache_age = None
+    if cached:
+        cache_age = (datetime.now() - cached['timestamp']).seconds / 3600 if cached['timestamp'] else None
+
+    if cached and cache_age and cache_age < 1:
+        st.session_state.base_report = cached['base_report']
+        st.session_state.report = cached['report']
+        st.session_state.last_refresh = cached['timestamp']
+        st.session_state.market_data = cached.get('market_data')
+        st.success(f"✅ Loaded {ticker_input} from cache ({cache_age:.1f}h old)")
+        st.rerun()
+    else:
+        progress_container = st.empty()
+        status_container = st.empty()
+
+        with progress_container.container():
+            progress_bar = st.progress(0, text="Initializing...")
+            status_container.info(f"🔍 Analyzing {ticker_input}...")
+
+        try:
+            progress_bar.progress(10, text="Fetching market data...")
+            market_data = fetch_market_data(ticker_input)
+
+            progress_bar.progress(20, text="Running fundamental analysis...")
+            base_report = hedge_engine.analyze_ticker(ticker_input)
+            if not base_report or 'error' in base_report:
+                raise Exception(base_report.get('error', 'Unknown error'))
+
+            progress_bar.progress(50, text="Scanning options chain...")
+            total_score = base_report.get('verdict', {}).get('score', 50)
+            report = option_engine.get_option_recommendations(ticker_input, total_score, 100000)
+            if 'error' in report:
+                raise Exception(report['error'])
+
+            progress_bar.progress(80, text="Caching results...")
+            st.session_state.market_data = market_data
+            save_to_cache(conn, ticker_input)
+
+            st.session_state.base_report = base_report
+            st.session_state.report = report
+            st.session_state.last_refresh = datetime.now()
+            st.session_state.analysis_mem_cache[ticker_input] = {
+                'base_report': base_report,
+                'report': report,
+                'market_data': market_data,
+                'timestamp': st.session_state.last_refresh
+            }
+
+            progress_bar.progress(100, text="Complete!")
+            status_container.success(f"✅ Analysis complete for {ticker_input}")
+            time.sleep(1)
+            progress_container.empty()
+            status_container.empty()
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")

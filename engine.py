@@ -163,9 +163,14 @@ class QuantOptionEngine:
         # Concatenate efficiently
         all_puts_df = pd.concat(all_puts, ignore_index=True)
         all_calls_df = pd.concat(all_calls, ignore_index=True)
+
+        # CSP should be out-of-the-money: strike must be at or below spot.
+        otm_puts_df = all_puts_df[all_puts_df['strike'] <= price].copy()
+        if otm_puts_df.empty:
+            otm_puts_df = all_puts_df.copy()
         
         # Optimized selection - use nsmallest instead of full sort
-        best_put = all_puts_df.nsmallest(1, 'diff').iloc[0].to_dict()
+        best_put = otm_puts_df.nsmallest(1, 'diff').iloc[0].to_dict()
         best_call = all_calls_df.nsmallest(1, 'diff').iloc[0].to_dict()
         
         return {

@@ -139,6 +139,10 @@ class DataProcessor:
             df = df[df['premium_yield'] < 30]  # Lower yield, safer
         elif risk_tolerance == 'Aggressive':
             df = df[df['premium_yield'] > 10]  # Higher yield, riskier
+
+        # CSP put candidates should be OTM (strike at or below current stock price).
+        if option_type == 'put':
+            df = df[df['strike'] <= price]
         
         # Apply probability filter
         prob_col = 'prob_itm' if option_type == 'call' else 'prob_otm'
